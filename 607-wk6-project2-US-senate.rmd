@@ -1,0 +1,137 @@
+---
+title: "607-wk6-project2-USSenate"
+author: "Tyler Frankenberg"
+date: "3/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DT)
+
+```
+
+## Introduction
+
+We often hear about the advantage of incumbency in American leglislative elections.  This data from senate races 1974 - 2018 shows the amount spent and number of candidates per party, with additional variables including which challenger vs incumbent, and outcome including the margin of victory.
+
+This data comes from the Brookings Intitution's "Vital Statistics on Congress" at  <https://www.brookings.edu/multi-chapter-report/vital-statistics-on-congress/>.
+
+
+```{r import}
+
+rawdata <- as_tibble(read.csv("https://raw.githubusercontent.com/curdferguson/607-wk6-project2-US-senate/main/vitalstats_ch3_full.csv", na = ""))
+
+```
+
+## Data Cleaning - Steps:
+
+1. Remove "disclaimer" notes at the bottom
+2. Remove Row 1 and make years the column headers
+3. get "outcome" as its own variable
+4. get "Incumbent/ Challenger" as its own variable
+5. get "party" as its own variable
+6. get "n" and "amount" as separate values for each observation
+
+```{r clean1}
+
+# Use slice to remove row 1 and rows 48-end
+rawdata <- rawdata %>% slice(2:47)
+
+# Make years the column headers, name col 1, and drop years row and unnamed columns
+# Remove blank rows and trim whitespace
+rawdata[[1, 1]] <- "Col1"
+names(rawdata) <- rawdata[1,]
+rawdata <- rawdata %>% select(!c(3,6,8,10,13))
+rawdata <- rawdata %>% slice(3:46) %>% filter(`Col1` != "" | `2018` != "")
+rawdata$Col1<- rawdata$Col1 %>% str_trim(side = c("both"))
+
+```
+Before we can comfortably pivot this data, we need to ensure that all of the multiple variables currently housed in column 1 are given their own column, and that redundant data (such as total columns) is removed...
+
+```{r col1_valuevectors}
+
+# set factor levels for outcomes and incumbent/ challenger
+outcome_levels <- c("Incumbent w/ >= 60%", "Incumbent w/ < 60%", "Challenger")
+inc_chal_levels <- c("Incumbents", "Challengers")
+
+# fill missing values
+rawdata <- rawdata %>% fill(Col1, .direction = c("down"))
+
+# add an "outcome" column
+rawdata <- rawdata %>% mutate(
+  Outcome = c(1:39))
+
+# populate the "outcome" column with the appropriate factor level
+rawdata$Outcome <- rawdata$Outcome %>% lapply(function(i) {
+  if (i %in% 1:13){
+      rawdata$Outcome[[i]] = outcome_levels[[1]]
+    } else if (i %in% 14:26){
+      rawdata$Outcome[[i]] = outcome_levels[[2]]
+    } else if (i %in% 27:39){
+      rawdata$Outcome[[i]] = outcome_levels[[3]]
+    }}) %>% 
+  factor(levels = outcome_levels)
+
+# remove rows housing only a value for "outcome"
+rawdata <- rawdata %>% filter(!is.na(`2018`))
+
+# add a column for "incumbent/ challenger" and populate
+rawdata <- rawdata %>% mutate(
+  `Inc/Chal` = ifelse(
+    rawdata$`Col1` == "Incumbents", "Incumbents", ifelse(
+    rawdata$`Col1` == "Challengers", "Challengers", NA)))
+
+# change "incumbent/ challenger" to type "factor" and set the levels
+rawdata$`Inc/Chal` <- rawdata$`Inc/Chal` %>% factor(levels = inc_chal_levels)
+
+# fill the "incumbent/ challenger" column
+rawdata <- rawdata %>% fill(`Inc/Chal`, .direction = c("down"))
+
+# retain only those rows for which col1 value is "democrats" or "republicans" and rename the column to "Party"
+rawdata <- rawdata %>% filter(`Col1` == "Democrats" | `Col1` == "Republicans")
+rawdata <- rename(rawdata, "Party" = `Col1`)
+  
+
+```
+
+
+Since we have two sets of values which we'll ultimately want in our long tibble ("amount spent" and "n" or "number of candidates"), we'll accomplish the pivot and our last cleaning task by separating the two types of values out into separate tables.  We'll then join them back together once both are clean and in long format.
+
+
+```{r split_data}
+
+# get the even numbered rows where the messy "n" values are stored
+split_data_n <- rawdata %>% filter((row(rawdata) %% 2) == 0)
+
+# remove all information from "n" except their integer value
+split_data_n[2:24] <- split_data_n[2:24] %>% lapply(function(i){
+  str_match(i, "(?<==)[:digit:]{1,2}") %>% .[,1] %>% as.integer()
+  })
+
+# get the values for "years"
+years <- names(split_data_n[2:24])
+
+# pivot the "n" dataframe to a long format
+split_data_n <- split_data_n %>% pivot_longer(cols=years, names_to="Year", values_to="N")
+
+# get the odd numbered rows where the messy dollar values are stored
+split_data_dol <- rawdata %>% filter((row(rawdata) %% 2) == 1)
+
+# remove all commas from the dollar values
+split_data_dol[2:24] <- split_data_dol[2:24] %>% lapply(function(i){
+  str_replace_all(i, ",", "") %>% as.integer()
+  })
+
+# pivot the "dollars" dataframe to a long format 
+split_data_dol <- split_data_dol %>% pivot_longer(cols=years, names_to="Year", values_to = "Total Spent")
+
+```
+
+```{r join_data}
+# join the split, long-format data tables back together 
+clean_data <- inner_join(split_data_n, split_data_dol)
+
+```
